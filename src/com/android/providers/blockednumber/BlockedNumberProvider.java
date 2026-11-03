@@ -578,6 +578,10 @@ public class BlockedNumberProvider extends ContentProvider {
         SharedPreferences.Editor editor = pref.edit();
         editor.putBoolean(key, value);
         editor.apply();
+        // ArielOS: let observers (ArielGuardian) know an enhanced block setting changed
+        getContext().getContentResolver().notifyChange(
+                Uri.withAppendedPath(BlockedNumberContract.AUTHORITY_URI,
+                        "enhanced_setting/" + key), null);
     }
 
     private void writeEmergencyCallNotificationPref(boolean show) {
