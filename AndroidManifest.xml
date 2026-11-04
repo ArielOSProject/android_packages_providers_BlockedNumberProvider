@@ -18,6 +18,9 @@
         package="com.android.providers.blockednumber"
         android:sharedUserId="android.uid.shared">
 
+    <!-- ArielOS: read ArielGuardian masters so their SMS commands pass "block unknown SMS" -->
+    <uses-permission android:name="com.ariel.guardian.READ_DATA_PERMISSION" />
+
     <application
         android:process="android.process.acore"
         android:label="@string/app_label"
