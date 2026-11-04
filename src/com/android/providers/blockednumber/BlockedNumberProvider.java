@@ -515,9 +515,12 @@ public class BlockedNumberProvider extends ContentProvider {
             int presentation = extras.getInt(BlockedNumberContract.EXTRA_CALL_PRESENTATION);
             switch (presentation) {
                 case TelecomManager.PRESENTATION_ALLOWED:
+                    // ArielOS: with the setting off nothing below runs, so no call is blocked by
+                    // this rule. Masters pass even when they are not in contacts. The manual block
+                    // list (checked at the end) and the other enhanced keys work independently.
                     if (getEnhancedBlockSetting(
                             SystemContract.ENHANCED_SETTING_KEY_BLOCK_UNREGISTERED)
-                                    && !contactExist) {
+                                    && !contactExist && !arielIsMasterCaller(phoneNumber)) {
                         blockReason = BlockedNumberContract.STATUS_BLOCKED_NOT_IN_CONTACTS;
                     }
                     break;
@@ -607,6 +610,27 @@ public class BlockedNumberProvider extends ContentProvider {
             return !isInContacts(number) && !isGuardianMaster(number);
         } catch (Exception e) {
             Log.w(TAG, "arielShouldBlockSms: failing open", e);
+            return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * ArielOS: true if the caller is an ArielGuardian master, so "block unknown calls" lets the
+     * parents through even when they are not saved in contacts. Only asked when the call would
+     * otherwise be blocked. Any error returns false, so the call is blocked as before.
+     */
+    private boolean arielIsMasterCaller(String number) {
+        if (TextUtils.isEmpty(number)) {
+            return false;
+        }
+        // Guardian is read as this provider, not as the telephony caller.
+        final long token = Binder.clearCallingIdentity();
+        try {
+            return isGuardianMaster(number);
+        } catch (Exception e) {
+            Log.w(TAG, "arielIsMasterCaller: failing closed", e);
             return false;
         } finally {
             Binder.restoreCallingIdentity(token);
