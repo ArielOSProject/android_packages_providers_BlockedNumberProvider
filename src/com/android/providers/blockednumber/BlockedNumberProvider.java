@@ -43,8 +43,10 @@ import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.BlockedNumberContract;
 import android.provider.BlockedNumberContract.SystemContract;
+import android.provider.ContactsContract;
 import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
+import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
@@ -81,6 +83,15 @@ public class BlockedNumberProvider extends ContentProvider {
     // to emulate calls from other apps.
     @VisibleForTesting
     static boolean ALLOW_SELF_CALL = true;
+
+    // ArielOS: block unknown SMS. The extra is set by InboundSmsHandler (frameworks/opt/telephony),
+    // the key is stored like the other enhanced block settings (set_enhanced_block_setting).
+    private static final String ARIEL_EXTRA_IS_SMS = "ariel_is_sms";
+    private static final String ARIEL_KEY_BLOCK_UNKNOWN_SMS = "ariel_block_unknown_sms";
+    private static final int ARIEL_SHORT_CODE_MAX_DIGITS = 6;
+    private static final Uri ARIEL_MASTERS_URI = Uri.parse(
+            "content://com.ariel.guardian.provider.data/master/retrieve_all_masters");
+    private static final String ARIEL_MASTER_PHONE_COLUMN = "masterPhoneNumber";
 
     static {
         sUriMatcher = new UriMatcher(0);
@@ -522,6 +533,12 @@ public class BlockedNumberProvider extends ContentProvider {
         if (isEmergencyNumber(phoneNumber)) {
             return BlockedNumberContract.STATUS_NOT_BLOCKED;
         }
+        // ArielOS: incoming SMS from InboundSmsHandler, see arielShouldBlockSms()
+        if (extras != null && extras.getBoolean(ARIEL_EXTRA_IS_SMS)
+                && getEnhancedBlockSetting(ARIEL_KEY_BLOCK_UNKNOWN_SMS)
+                && arielShouldBlockSms(phoneNumber)) {
+            return BlockedNumberContract.STATUS_BLOCKED_NOT_IN_CONTACTS;
+        }
 
         int blockReason = BlockedNumberContract.STATUS_NOT_BLOCKED;
         if (extras != null && !extras.isEmpty()) {
@@ -604,6 +621,68 @@ public class BlockedNumberProvider extends ContentProvider {
                 || getEnhancedBlockSetting(SystemContract.ENHANCED_SETTING_KEY_BLOCK_PRIVATE)
                 || getEnhancedBlockSetting(SystemContract.ENHANCED_SETTING_KEY_BLOCK_PAYPHONE)
                 || getEnhancedBlockSetting(SystemContract.ENHANCED_SETTING_KEY_BLOCK_UNKNOWN);
+    }
+
+    /**
+     * ArielOS: decides whether an incoming SMS from {@code number} is dropped when the Ariel
+     * "block unknown SMS" setting is on. Blocked SMS are deleted permanently by telephony.
+     * Passes (returns false): empty numbers, named senders, short codes, contacts and ArielGuardian
+     * masters. Any error returns false, so a failure never deletes a message.
+     */
+    private boolean arielShouldBlockSms(String number) {
+        if (TextUtils.isEmpty(number) || isNamedOrShortSender(number)) {
+            return false;
+        }
+        // Contacts and Guardian are read as this provider, not as the telephony caller.
+        final long token = Binder.clearCallingIdentity();
+        try {
+            return !isInContacts(number) && !isGuardianMaster(number);
+        } catch (Exception e) {
+            Log.w(TAG, "arielShouldBlockSms: failing open", e);
+            return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * True for senders with a name ("Google", "MojaBanka") and for short codes (digits only, no
+     * leading +, at most 6 digits). Verification codes mostly come from these.
+     */
+    @VisibleForTesting
+    static boolean isNamedOrShortSender(String number) {
+        boolean allDigits = true;
+        for (int i = 0; i < number.length(); i++) {
+            char c = number.charAt(i);
+            if (Character.isLetter(c)) {
+                return true;
+            }
+            if (!Character.isDigit(c)) {
+                allDigits = false;
+            }
+        }
+        return allDigits && number.length() <= ARIEL_SHORT_CODE_MAX_DIGITS;
+    }
+
+    private boolean isInContacts(String number) {
+        Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                Uri.encode(number));
+        try (Cursor c = getContext().getContentResolver().query(uri,
+                new String[] {ContactsContract.PhoneLookup._ID}, null, null, null)) {
+            return c != null && c.moveToFirst();
+        }
+    }
+
+    private boolean isGuardianMaster(String number) {
+        try (Cursor c = getContext().getContentResolver().query(ARIEL_MASTERS_URI,
+                new String[] {ARIEL_MASTER_PHONE_COLUMN}, null, null, null)) {
+            while (c != null && c.moveToNext()) {
+                if (PhoneNumberUtils.compare(getContext(), number, c.getString(0))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean getEnhancedBlockSetting(String key) {
